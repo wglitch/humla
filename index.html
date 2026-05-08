@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Humla</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <section class="hero">
+      <p class="eyebrow">collaborative humming</p>
+      <h1>Humla</h1>
+      <p class="tagline">Nynna en krok. Humla svarar, utvecklar och lämnar tillbaka melodin.</p>
+    </section>
+
+    <section class="orb-wrap">
+      <canvas id="visualizer" width="900" height="900" aria-label="Humla visualisering"></canvas>
+      <div class="orb">
+        <div id="phaseLabel" class="phase">Redo</div>
+        <div id="timerLabel" class="timer">5.0</div>
+      </div>
+    </section>
+
+    <section class="controls">
+      <button id="startBtn" class="primary">Starta Humla</button>
+      <button id="stopBtn" class="secondary" disabled>Stoppa</button>
+    </section>
+
+    <section class="status-panel">
+      <p id="statusText">Tryck start och tillåt mikrofon. Nynna ungefär fem sekunder när det är din tur.</p>
+      <div class="meter">
+        <div id="progressBar"></div>
+      </div>
+    </section>
+
+    <section class="notes">
+      <p>
+        Tips: håll mobilen nära, nynna tydligt, och låt Humla vara lite konstig.
+        Det här är en musikalisk organism, inte en perfekt pitchdetektor.
+      </p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
