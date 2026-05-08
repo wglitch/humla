@@ -233,3 +233,95 @@ body.developing .orb {
     width: min(72vw, 310px);
   }
 }
+
+.bee-rig {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 86px;
+  height: 120px;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.bee {
+  position: relative;
+  width: 86px;
+  height: 90px;
+  filter: drop-shadow(0 0 14px rgba(255, 203, 112, 0.28));
+}
+
+.bee-body {
+  position: absolute;
+  left: 25px;
+  top: 14px;
+  width: 36px;
+  height: 52px;
+  border-radius: 55% 55% 45% 45%;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 203, 112, 0.9) 0 18%,
+      rgba(35, 24, 43, 0.95) 18% 34%,
+      rgba(255, 203, 112, 0.82) 34% 52%,
+      rgba(35, 24, 43, 0.95) 52% 70%,
+      rgba(255, 203, 112, 0.68) 70% 100%
+    );
+  border: 1px solid rgba(255, 247, 232, 0.22);
+}
+
+.wing {
+  position: absolute;
+  top: 0;
+  width: 34px;
+  height: 46px;
+  border-radius: 70% 35% 70% 35%;
+  background: rgba(255, 247, 232, 0.16);
+  border: 1px solid rgba(255, 247, 232, 0.18);
+  transform-origin: bottom center;
+}
+
+.wing-left {
+  left: 8px;
+  transform: rotate(-26deg);
+}
+
+.wing-right {
+  right: 8px;
+  transform: rotate(26deg) scaleX(-1);
+}
+
+.stinger {
+  position: absolute;
+  left: 41px;
+  top: 64px;
+  width: 3px;
+  height: 56px;
+  background: linear-gradient(180deg, rgba(255, 247, 232, 0.9), rgba(255, 203, 112, 0.35));
+  border-radius: 99px;
+  transform-origin: top center;
+}
+
+body.listening .wing,
+body.responding .wing,
+body.developing .wing,
+body.revisiting .wing {
+  animation: wingbuzz 90ms infinite alternate ease-in-out;
+}
+
+body.listening .stinger,
+body.responding .stinger,
+body.developing .stinger,
+body.revisiting .stinger {
+  box-shadow: 0 0 16px rgba(255, 203, 112, 0.55);
+}
+
+@keyframes wingbuzz {
+  from { transform: rotate(-18deg) scaleY(1); }
+  to { transform: rotate(-34deg) scaleY(0.92); }
+}
+
+.wing-right {
+  animation-direction: alternate-reverse;
+}

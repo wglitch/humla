@@ -2,9 +2,13 @@ const PHASE_SECONDS = 5;
 const SAMPLE_INTERVAL_MS = 90;
 const MIN_FREQ = 85;
 const MAX_FREQ = 900;
+const HUM_STORAGE_KEY = "humla_saved_hums_v1";
+const MAX_RINGS = 12;
 
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
+const saveBtn = document.getElementById("saveBtn");
+const revisitBtn = document.getElementById("revisitBtn");
 const phaseLabel = document.getElementById("phaseLabel");
 const timerLabel = document.getElementById("timerLabel");
 const statusText = document.getElementById("statusText");
@@ -21,7 +25,9 @@ let running = false;
 let phase = "ready";
 let currentSamples = [];
 let motifMemory = [];
-let visualLines = [];
+let tracks = [];
+let activeTrack = null;
+let lastHumanMotif = null;
 let animationFrame = null;
 let sampleTimer = null;
 let phaseStart = 0;
@@ -30,7 +36,7 @@ let activeOscillators = [];
 
 const creature = {
   mood: "curious",
-  warmth: 0.42,
+  warmth: 0.45,
   weirdness: 0.28,
   memory: 0.35
 };
@@ -39,10 +45,13 @@ const moods = ["curious", "sleepy", "playful", "strange", "tender"];
 
 startBtn.addEventListener("click", startHumla);
 stopBtn.addEventListener("click", stopHumla);
+saveBtn.addEventListener("click", saveLastHumanHum);
+revisitBtn.addEventListener("click", revisitSavedHum);
 
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 drawIdle();
+updateRevisitButton();
 
 async function startHumla() {
   try {
@@ -51,7 +60,6 @@ async function startHumla() {
 
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-    // Viktigt för iOS/Safari: skapa/resume audio från knapptryck.
     if (audioCtx.state === "suspended") {
       await audioCtx.resume();
     }
@@ -75,15 +83,16 @@ async function startHumla() {
 
     running = true;
     stopBtn.disabled = false;
+    saveBtn.disabled = true;
 
     animate();
-    beginHumanTurn("Nynna en krok. Fem sekunder.");
+    beginHumanTurn("Nynna en krok. Humla ristar ytterspåret.");
   } catch (error) {
     console.error(error);
     startBtn.disabled = false;
     stopBtn.disabled = true;
     statusText.textContent =
-      "Humla fick inte igång mikrofonen. Kolla mikrofonbehörighet och att sidan körs via https/GitHub Pages.";
+      "Humla fick inte igång mikrofonen. Testa via GitHub Pages/https och kolla mikrofonbehörighet.";
   }
 }
 
@@ -94,9 +103,7 @@ function stopHumla() {
   clearInterval(sampleTimer);
   stopAllOscillators();
 
-  if (micStream) {
-    micStream.getTracks().forEach((track) => track.stop());
-  }
+  if (micStream) micStream.getTracks().forEach((track) => track.stop());
 
   if (audioCtx && audioCtx.state !== "closed") {
     audioCtx.close();
@@ -107,11 +114,12 @@ function stopHumla() {
   document.body.className = "";
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  saveBtn.disabled = !lastHumanMotif;
   phaseLabel.textContent = "Stoppad";
   timerLabel.textContent = "0.0";
   progressBar.style.width = "0%";
-  statusText.textContent = "Stoppad. Starta igen när du vill nynna vidare.";
-  drawIdle();
+  statusText.textContent = "Stoppad. Skivan ligger kvar som minne.";
+  draw();
 }
 
 function beginHumanTurn(message = "Din tur.") {
@@ -123,12 +131,22 @@ function beginHumanTurn(message = "Din tur.") {
   statusText.textContent = message;
 
   currentSamples = [];
+  activeTrack = createTrack("human", null);
+  tracks.unshift(activeTrack);
+  trimTracks();
+
   startTimedPhase(PHASE_SECONDS, () => {
     const motif = analyzeHumanPhrase(currentSamples);
+    lastHumanMotif = motif;
+    saveBtn.disabled = false;
+
+    activeTrack.motif = motif;
+    activeTrack.contour = motif.contour;
+    activeTrack.complete = true;
+
     motifMemory.push(motif);
     if (motifMemory.length > 8) motifMemory.shift();
 
-    visualLines.push(makeVisualLine(motif, "human"));
     beginMachineResponse(motif);
   });
 
@@ -146,10 +164,14 @@ function beginMachineResponse(humanMotif) {
   statusText.textContent = responseText("response");
 
   const response = transformMotif(humanMotif, "response");
-  visualLines.push(makeVisualLine(response, "machine"));
+  activeTrack = createTrack("machine", response);
+  tracks.unshift(activeTrack);
+  trimTracks();
+
   playMotif(response, PHASE_SECONDS, "response");
 
   startTimedPhase(PHASE_SECONDS, () => {
+    activeTrack.complete = true;
     beginMachineDevelopment(response);
   });
 }
@@ -163,12 +185,16 @@ function beginMachineDevelopment(previousMotif) {
   statusText.textContent = responseText("development");
 
   const development = transformMotif(previousMotif, "development");
-  visualLines.push(makeVisualLine(development, "machineDevelop"));
+  activeTrack = createTrack("machineDevelop", development);
+  tracks.unshift(activeTrack);
+  trimTracks();
+
   playMotif(development, PHASE_SECONDS, "development");
 
   startTimedPhase(PHASE_SECONDS, () => {
+    activeTrack.complete = true;
     mutateCreature();
-    beginHumanTurn("Din tur igen. Svara på Humla.");
+    beginHumanTurn("Din tur igen. Svara på ytterspåret.");
   });
 }
 
@@ -177,7 +203,7 @@ function startTimedPhase(seconds, onDone) {
   phaseDuration = seconds * 1000;
 
   function tick(now) {
-    if (!running) return;
+    if (!running && phase !== "revisiting") return;
 
     const elapsed = now - phaseStart;
     const left = Math.max(0, phaseDuration - elapsed);
@@ -185,6 +211,8 @@ function startTimedPhase(seconds, onDone) {
 
     timerLabel.textContent = (left / 1000).toFixed(1);
     progressBar.style.width = `${progress * 100}%`;
+
+    if (activeTrack) activeTrack.progress = progress;
 
     if (elapsed >= phaseDuration) {
       progressBar.style.width = "100%";
@@ -205,11 +233,17 @@ function sampleInput() {
   const rms = getRms(dataBuffer);
   const pitch = autoCorrelate(dataBuffer, audioCtx.sampleRate);
 
-  currentSamples.push({
+  const sample = {
     time: performance.now(),
     volume: rms,
     pitch: pitch || null
-  });
+  };
+
+  currentSamples.push(sample);
+
+  if (activeTrack) {
+    activeTrack.liveSamples = currentSamples.slice(-70);
+  }
 }
 
 function analyzeHumanPhrase(samples) {
@@ -224,15 +258,18 @@ function analyzeHumanPhrase(samples) {
   const volumes = samples.map((s) => s.volume);
 
   const baseFreq = pitches.length ? median(pitches) : randomBetween(170, 260);
-  const energy = clamp(avg(volumes) * 14, 0.08, 1);
+  const energy = clamp(avg(volumes) * 16, 0.12, 1);
 
   const contour = normalizeContour(samples, baseFreq);
 
   return {
+    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    createdAt: Date.now(),
     baseFreq,
     energy,
     contour,
     density: clamp(pitches.length / Math.max(1, samples.length), 0, 1),
+    mood: creature.mood,
     seed: Math.random()
   };
 }
@@ -247,7 +284,7 @@ function normalizeContour(samples, baseFreq) {
 
     points.push({
       ratio: clamp(ratio, 0.5, 2.0),
-      volume: clamp(volume * 18, 0, 1),
+      volume: clamp(volume * 20, 0, 1),
       voiced: Boolean(hasPitch)
     });
   }
@@ -262,7 +299,7 @@ function normalizeContour(samples, baseFreq) {
     }
   }
 
-  return resample(points, 56);
+  return resample(points, 64);
 }
 
 function transformMotif(motif, mode) {
@@ -272,33 +309,17 @@ function transformMotif(motif, mode) {
       : motif;
 
   const type = chooseTransform(mode);
+
   const contour = source.contour.map((p, index, arr) => {
     let ratio = p.ratio;
     let volume = p.volume;
 
-    if (type === "echo") {
-      ratio *= randomBetween(0.985, 1.015);
-    }
-
-    if (type === "invert") {
-      ratio = 1 / ratio;
-    }
-
-    if (type === "harmonizeUp") {
-      ratio *= 1.25;
-    }
-
-    if (type === "harmonizeDown") {
-      ratio *= 0.75;
-    }
-
-    if (type === "question") {
-      ratio *= 1 + (index / arr.length) * 0.18;
-    }
-
-    if (type === "answer") {
-      ratio *= 1.12 - (index / arr.length) * 0.18;
-    }
+    if (type === "echo") ratio *= randomBetween(0.985, 1.015);
+    if (type === "invert") ratio = 1 / ratio;
+    if (type === "harmonizeUp") ratio *= 1.25;
+    if (type === "harmonizeDown") ratio *= 0.75;
+    if (type === "question") ratio *= 1 + (index / arr.length) * 0.18;
+    if (type === "answer") ratio *= 1.12 - (index / arr.length) * 0.18;
 
     if (type === "creature") {
       ratio *= 1 + Math.sin(index * 0.55 + source.seed * 10) * creature.weirdness;
@@ -318,10 +339,13 @@ function transformMotif(motif, mode) {
   });
 
   return {
+    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
+    createdAt: Date.now(),
     baseFreq: clamp(source.baseFreq * randomBetween(0.92, 1.12), MIN_FREQ, MAX_FREQ),
-    energy: clamp(source.energy * randomBetween(0.85, 1.2), 0.08, 1),
+    energy: clamp(source.energy * randomBetween(0.9, 1.35), 0.16, 1),
     contour,
     density: source.density,
+    mood: creature.mood,
     seed: Math.random(),
     type,
     mode
@@ -358,22 +382,33 @@ function playMotif(motif, seconds, mode) {
   const step = total / motif.contour.length;
 
   const master = audioCtx.createGain();
+  const compressor = audioCtx.createDynamicsCompressor();
+
+  compressor.threshold.setValueAtTime(-18, now);
+  compressor.knee.setValueAtTime(16, now);
+  compressor.ratio.setValueAtTime(8, now);
+  compressor.attack.setValueAtTime(0.006, now);
+  compressor.release.setValueAtTime(0.18, now);
+
   master.gain.setValueAtTime(0.0001, now);
-  master.gain.exponentialRampToValueAtTime(0.42, now + 0.08);
-  master.gain.exponentialRampToValueAtTime(0.0001, now + total - 0.03);
-  master.connect(audioCtx.destination);
+  master.gain.linearRampToValueAtTime(0.82, now + 0.08);
+  master.gain.linearRampToValueAtTime(0.82, now + total - 0.16);
+  master.gain.linearRampToValueAtTime(0.0001, now + total);
+
+  master.connect(compressor);
+  compressor.connect(audioCtx.destination);
 
   const filter = audioCtx.createBiquadFilter();
   filter.type = "lowpass";
-  filter.frequency.setValueAtTime(mode === "development" ? 1100 : 850, now);
-  filter.Q.setValueAtTime(3.2, now);
+  filter.frequency.setValueAtTime(mode === "development" ? 1350 : 1050, now);
+  filter.Q.setValueAtTime(2.8, now);
   filter.connect(master);
 
   const delay = audioCtx.createDelay(0.45);
   delay.delayTime.setValueAtTime(mode === "development" ? 0.22 : 0.16, now);
 
   const feedback = audioCtx.createGain();
-  feedback.gain.setValueAtTime(mode === "development" ? 0.28 : 0.18, now);
+  feedback.gain.setValueAtTime(mode === "development" ? 0.22 : 0.14, now);
 
   delay.connect(feedback);
   feedback.connect(delay);
@@ -392,6 +427,7 @@ function playMotif(motif, seconds, mode) {
 
   const hum = audioCtx.createOscillator();
   const humGain = audioCtx.createGain();
+
   hum.type = "sine";
   hum.frequency.setValueAtTime(motif.baseFreq * 0.5, now);
   humGain.gain.setValueAtTime(0.0001, now);
@@ -401,16 +437,18 @@ function playMotif(motif, seconds, mode) {
   motif.contour.forEach((point, i) => {
     const t = now + i * step;
     const freq = clamp(motif.baseFreq * point.ratio, MIN_FREQ, MAX_FREQ);
-    const gain = point.voiced ? 0.025 + point.volume * 0.19 * motif.energy : 0.0001;
+    const gain = point.voiced
+      ? 0.08 + point.volume * 0.34 * motif.energy
+      : 0.0001;
 
     osc.frequency.linearRampToValueAtTime(freq, t);
     hum.frequency.linearRampToValueAtTime(freq * 0.5, t);
     oscGain.gain.linearRampToValueAtTime(gain, t);
-    humGain.gain.linearRampToValueAtTime(gain * 0.32, t);
+    humGain.gain.linearRampToValueAtTime(gain * 0.34, t);
   });
 
-  oscGain.gain.exponentialRampToValueAtTime(0.0001, now + total);
-  humGain.gain.exponentialRampToValueAtTime(0.0001, now + total);
+  oscGain.gain.linearRampToValueAtTime(0.0001, now + total);
+  humGain.gain.linearRampToValueAtTime(0.0001, now + total);
 
   osc.start(now);
   hum.start(now);
@@ -422,45 +460,160 @@ function playMotif(motif, seconds, mode) {
   osc.onended = () => {
     activeOscillators = activeOscillators.filter((o) => o !== osc && o !== hum);
     safeDisconnect(master);
+    safeDisconnect(compressor);
     safeDisconnect(filter);
     safeDisconnect(delay);
     safeDisconnect(feedback);
   };
 }
 
+function saveLastHumanHum() {
+  if (!lastHumanMotif) return;
+
+  const saved = getSavedHums();
+  const item = {
+    ...lastHumanMotif,
+    title: `Hum ${new Date().toLocaleString("sv-SE", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    })}`
+  };
+
+  saved.unshift(item);
+  localStorage.setItem(HUM_STORAGE_KEY, JSON.stringify(saved.slice(0, 24)));
+
+  statusText.textContent = "Humla sparade avtrycket. Inte rösten — minnet.";
+  saveBtn.disabled = true;
+  updateRevisitButton();
+}
+
+function revisitSavedHum() {
+  const saved = getSavedHums();
+  if (!saved.length) {
+    statusText.textContent = "Det finns inga sparade hum ännu.";
+    return;
+  }
+
+  ensureAudioContextOnly();
+
+  const original = saved[Math.floor(Math.random() * saved.length)];
+  const remembered = rememberMotif(original);
+
+  running = false;
+  phase = "revisiting";
+  document.body.className = "revisiting";
+  phaseLabel.textContent = "Återbesök";
+  statusText.textContent = `Humla minns: ${original.title || "ett gammalt hum"}`;
+
+  activeTrack = createTrack("memory", remembered);
+  tracks.unshift(activeTrack);
+  trimTracks();
+
+  playMotif(remembered, PHASE_SECONDS, "development");
+
+  if (!animationFrame) animateRevisit();
+
+  startTimedPhase(PHASE_SECONDS, () => {
+    activeTrack.complete = true;
+    phase = "ready";
+    document.body.className = "";
+    phaseLabel.textContent = "Redo";
+    timerLabel.textContent = "5.0";
+    progressBar.style.width = "0%";
+    statusText.textContent = "Minnet försvann nästan, men stommen finns kvar.";
+  });
+}
+
+function ensureAudioContextOnly() {
+  if (!audioCtx || audioCtx.state === "closed") {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+}
+
+function rememberMotif(motif) {
+  return {
+    ...motif,
+    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    createdAt: Date.now(),
+    baseFreq: clamp(motif.baseFreq * randomBetween(0.94, 1.08), MIN_FREQ, MAX_FREQ),
+    energy: clamp(motif.energy * randomBetween(0.75, 1.05), 0.12, 1),
+    contour: motif.contour.map((p, i) => ({
+      ratio: clamp(
+        p.ratio * (1 + Math.sin(i * 0.29 + Math.random()) * 0.035),
+        0.5,
+        2
+      ),
+      volume: clamp(p.volume * randomBetween(0.78, 1.04), 0.03, 1),
+      voiced: p.voiced
+    })),
+    mood: "remembered",
+    mode: "memory",
+    type: "memory",
+    seed: Math.random()
+  };
+}
+
+function getSavedHums() {
+  try {
+    return JSON.parse(localStorage.getItem(HUM_STORAGE_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function updateRevisitButton() {
+  revisitBtn.disabled = getSavedHums().length === 0;
+}
+
+function createTrack(owner, motif) {
+  return {
+    owner,
+    motif,
+    contour: motif ? motif.contour : [],
+    liveSamples: [],
+    born: performance.now(),
+    progress: 0,
+    complete: false,
+    seed: Math.random()
+  };
+}
+
+function trimTracks() {
+  tracks = tracks.slice(0, MAX_RINGS);
+}
+
 function stopAllOscillators() {
   activeOscillators.forEach((osc) => {
     try {
       osc.stop();
-    } catch (_) {
-      // already stopped
-    }
+    } catch (_) {}
   });
   activeOscillators = [];
 }
 
 function responseText(kind) {
   if (kind === "response") {
-    const lines = [
-      "Humla hörde något. Den svarar försiktigt.",
-      "Humla tuggar på din krok och nynnar tillbaka.",
+    return randomFrom([
+      "Humla hörde något. Den svarar med gadden.",
+      "Humla tuggar på din krok och ristar tillbaka.",
       "Den lilla ljudvarelsen svarar.",
       "Humla speglar dig, men lite fel med flit."
-    ];
-    return lines[Math.floor(Math.random() * lines.length)];
+    ]);
   }
 
-  const lines = [
+  return randomFrom([
     "Humla fortsätter själv en stund.",
     "Nu tar den initiativ och driver melodin vidare.",
     "Humla blir lite modigare.",
     "Den hittade en sidoväg i melodin."
-  ];
-  return lines[Math.floor(Math.random() * lines.length)];
+  ]);
 }
 
 function mutateCreature() {
-  creature.mood = moods[Math.floor(Math.random() * moods.length)];
+  creature.mood = randomFrom(moods);
   creature.warmth = clamp(creature.warmth + randomBetween(-0.08, 0.08), 0.1, 0.9);
   creature.weirdness = clamp(creature.weirdness + randomBetween(-0.08, 0.12), 0.05, 0.65);
   creature.memory = clamp(creature.memory + randomBetween(-0.05, 0.08), 0.15, 0.75);
@@ -480,129 +633,211 @@ function animate() {
   animationFrame = requestAnimationFrame(animate);
 }
 
+function animateRevisit() {
+  draw();
+  if (phase === "revisiting") {
+    animationFrame = requestAnimationFrame(animateRevisit);
+  } else {
+    animationFrame = null;
+  }
+}
+
 function drawIdle() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawBase(0.5);
+  draw();
 }
 
 function draw() {
   const rect = canvas.getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
 
-  const pulse = 0.5 + Math.sin(performance.now() * 0.003) * 0.5;
-  drawBase(pulse);
+  const elapsed = performance.now() * 0.001;
+  const phaseProgress = activeTrack ? activeTrack.progress : 0;
+  const rotation = phase === "ready" || phase === "stopped"
+    ? elapsed * 0.08
+    : phaseProgress * Math.PI * 2;
 
-  if (phase === "listening" && analyser) {
-    analyser.getFloatTimeDomainData(dataBuffer);
-    drawMicWave(dataBuffer);
-  }
-
-  visualLines = visualLines.slice(-9);
-  visualLines.forEach((line, index) => {
-    drawMotifLine(line, index, visualLines.length);
-  });
+  drawRecordBase(rotation);
+  drawAllTracks(rotation);
+  drawNeedleGlow();
 }
 
-function drawBase(pulse) {
+function drawRecordBase(rotation) {
   const rect = canvas.getBoundingClientRect();
   const cx = rect.width / 2;
   const cy = rect.height / 2;
-  const baseR = rect.width * (0.34 + pulse * 0.015);
+  const maxR = rect.width * 0.44;
 
   ctx.save();
-  ctx.globalAlpha = 0.18;
-  ctx.lineWidth = 1.2;
+  ctx.translate(cx, cy);
+  ctx.rotate(rotation);
 
-  for (let i = 0; i < 4; i++) {
+  const gradient = ctx.createRadialGradient(0, 0, rect.width * 0.06, 0, 0, maxR);
+  gradient.addColorStop(0, "rgba(255,247,232,0.13)");
+  gradient.addColorStop(0.48, "rgba(255,247,232,0.045)");
+  gradient.addColorStop(1, "rgba(255,247,232,0.018)");
+
+  ctx.beginPath();
+  ctx.arc(0, 0, maxR, 0, Math.PI * 2);
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  ctx.globalAlpha = 0.19;
+  ctx.lineWidth = 1;
+
+  for (let r = rect.width * 0.13; r <= maxR; r += rect.width * 0.032) {
     ctx.beginPath();
-    ctx.arc(cx, cy, baseR + i * 18, 0, Math.PI * 2);
-    ctx.strokeStyle = i % 2 ? "rgba(143,255,210,0.18)" : "rgba(255,203,112,0.18)";
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,247,232,0.34)";
     ctx.stroke();
   }
 
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, rect.width * 0.052, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,203,112,0.28)";
+  ctx.fill();
+
   ctx.restore();
 }
 
-function drawMicWave(buffer) {
+function drawAllTracks(rotation) {
+  const rect = canvas.getBoundingClientRect();
+
+  tracks.forEach((track, index) => {
+    const age = index;
+    const outerRadius = rect.width * 0.43;
+    const ringGap = rect.width * 0.032;
+    const radius = outerRadius - age * ringGap;
+
+    if (radius < rect.width * 0.12) return;
+
+    const progress = track.complete ? 1 : track.progress;
+    const contour = track.contour.length
+      ? track.contour
+      : contourFromLiveSamples(track.liveSamples);
+
+    drawTrack(track, contour, radius, progress, rotation, age);
+  });
+}
+
+function drawTrack(track, contour, radius, progress, rotation, age) {
+  if (!contour.length) return;
+
   const rect = canvas.getBoundingClientRect();
   const cx = rect.width / 2;
   const cy = rect.height / 2;
-  const radius = rect.width * 0.36;
+  const visiblePoints = Math.max(2, Math.floor(contour.length * progress));
+  const color = trackColor(track.owner, age);
+  const alpha = age === 0 ? 0.96 : clamp(0.74 - age * 0.055, 0.18, 0.74);
+  const grooveNoise = track.owner === "human" ? 10 : 14;
 
   ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(rotation);
+
   ctx.beginPath();
 
-  for (let i = 0; i < 220; i++) {
-    const idx = Math.floor((i / 220) * buffer.length);
-    const angle = (i / 220) * Math.PI * 2;
-    const amp = buffer[idx] || 0;
-    const r = radius + amp * 56;
-    const x = cx + Math.cos(angle) * r;
-    const y = cy + Math.sin(angle) * r;
+  for (let i = 0; i < visiblePoints; i++) {
+    const point = contour[i];
+    const t = i / contour.length;
+    const angle = -Math.PI / 2 + t * Math.PI * 2;
+
+    const melodic = Math.log2(point.ratio || 1) * grooveNoise;
+    const energetic = (point.volume || 0) * 7;
+    const r = radius + melodic + energetic;
+
+    const x = Math.cos(angle) * r;
+    const y = Math.sin(angle) * r;
 
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   }
 
-  ctx.closePath();
-  ctx.strokeStyle = "rgba(255,203,112,0.85)";
-  ctx.lineWidth = 2;
-  ctx.shadowColor = "rgba(255,203,112,0.55)";
-  ctx.shadowBlur = 18;
+  if (progress >= 0.995) ctx.closePath();
+
+  ctx.strokeStyle = color.stroke(alpha);
+  ctx.lineWidth = age === 0 ? 2.8 : 1.35;
+  ctx.shadowColor = color.shadow;
+  ctx.shadowBlur = age === 0 ? 16 : 0;
   ctx.stroke();
+
+  // Grått minnesspår under färgen, särskilt tydligt när spåret åldras.
+  ctx.globalAlpha = clamp(0.18 + age * 0.025, 0.18, 0.46);
+  ctx.lineWidth = 0.8;
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(255,247,232,0.42)";
+  ctx.stroke();
+
   ctx.restore();
 }
 
-function makeVisualLine(motif, owner) {
+function contourFromLiveSamples(samples) {
+  if (!samples || samples.length < 2) return [];
+
+  const pitches = samples.map((s) => s.pitch).filter(Boolean);
+  const baseFreq = pitches.length ? median(pitches) : 220;
+
+  return normalizeContour(samples, baseFreq);
+}
+
+function trackColor(owner, age) {
+  if (age > 0) {
+    return {
+      stroke: (a) => `rgba(210,205,195,${a})`,
+      shadow: "rgba(255,247,232,0.15)"
+    };
+  }
+
+  if (owner === "human") {
+    return {
+      stroke: (a) => `rgba(255,203,112,${a})`,
+      shadow: "rgba(255,203,112,0.55)"
+    };
+  }
+
+  if (owner === "machineDevelop") {
+    return {
+      stroke: (a) => `rgba(232,124,255,${a})`,
+      shadow: "rgba(232,124,255,0.45)"
+    };
+  }
+
+  if (owner === "memory") {
+    return {
+      stroke: (a) => `rgba(180,170,255,${a})`,
+      shadow: "rgba(180,170,255,0.45)"
+    };
+  }
+
   return {
-    contour: motif.contour,
-    owner,
-    seed: Math.random(),
-    born: performance.now()
+    stroke: (a) => `rgba(143,255,210,${a})`,
+    shadow: "rgba(143,255,210,0.45)"
   };
 }
 
-function drawMotifLine(line, index, total) {
+function drawNeedleGlow() {
   const rect = canvas.getBoundingClientRect();
   const cx = rect.width / 2;
-  const cy = rect.height / 2;
-  const age = (performance.now() - line.born) / 1000;
-  const fade = clamp(1 - age / 38, 0.12, 0.88);
-  const radius = rect.width * (0.21 + index * 0.028);
-  const wobble = line.owner === "human" ? 18 : 28;
+  const y = rect.height * 0.07;
+  const tipY = rect.height * 0.075;
+  const outerR = rect.width * 0.43;
 
   ctx.save();
   ctx.beginPath();
-
-  line.contour.forEach((point, i) => {
-    const t = i / line.contour.length;
-    const angle = t * Math.PI * 2 + line.seed * 2 + age * 0.035;
-    const melodic = Math.log2(point.ratio) * wobble;
-    const energetic = point.volume * 22;
-    const r = radius + melodic + energetic;
-    const x = cx + Math.cos(angle) * r;
-    const y = cy + Math.sin(angle) * r;
-
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-
-  ctx.closePath();
-
-  if (line.owner === "human") {
-    ctx.strokeStyle = `rgba(255,203,112,${fade})`;
-    ctx.shadowColor = "rgba(255,203,112,0.45)";
-  } else if (line.owner === "machineDevelop") {
-    ctx.strokeStyle = `rgba(232,124,255,${fade})`;
-    ctx.shadowColor = "rgba(232,124,255,0.42)";
-  } else {
-    ctx.strokeStyle = `rgba(143,255,210,${fade})`;
-    ctx.shadowColor = "rgba(143,255,210,0.42)";
-  }
-
-  ctx.lineWidth = line.owner === "machineDevelop" ? 2.2 : 1.7;
-  ctx.shadowBlur = 10;
-  ctx.stroke();
+  ctx.arc(cx, rect.height / 2 - outerR, 5, 0, Math.PI * 2);
+  ctx.fillStyle =
+    phase === "listening"
+      ? "rgba(255,203,112,0.85)"
+      : phase === "responding"
+      ? "rgba(143,255,210,0.85)"
+      : phase === "developing"
+      ? "rgba(232,124,255,0.85)"
+      : "rgba(255,247,232,0.35)";
+  ctx.shadowBlur = 18;
+  ctx.shadowColor = ctx.fillStyle;
+  ctx.fill();
   ctx.restore();
 }
 
@@ -663,11 +898,7 @@ function autoCorrelate(buffer, sampleRate) {
 
 function getRms(buffer) {
   let sum = 0;
-
-  for (let i = 0; i < buffer.length; i++) {
-    sum += buffer[i] * buffer[i];
-  }
-
+  for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
   return Math.sqrt(sum / buffer.length);
 }
 
@@ -729,10 +960,12 @@ function randomBetween(min, max) {
   return min + Math.random() * (max - min);
 }
 
+function randomFrom(items) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
 function safeDisconnect(node) {
   try {
     node.disconnect();
-  } catch (_) {
-    // already disconnected
-  }
+  } catch (_) {}
 }
