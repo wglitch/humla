@@ -2,7 +2,7 @@ const PHASE_SECONDS = 5;
 const SAMPLE_INTERVAL_MS = 90;
 const MIN_FREQ = 85;
 const MAX_FREQ = 900;
-const HUM_STORAGE_KEY = "humla_saved_hums_v1";
+const HUM_STORAGE_KEY = "humla_saved_sessions_v1";
 const MAX_RINGS = 12;
 
 const startBtn = document.getElementById("startBtn");
@@ -33,6 +33,7 @@ let sampleTimer = null;
 let phaseStart = 0;
 let phaseDuration = PHASE_SECONDS * 1000;
 let activeOscillators = [];
+let sessionStartedAt = Date.now();
 
 const creature = {
   mood: "curious",
@@ -81,6 +82,11 @@ async function startHumla() {
 
     dataBuffer = new Float32Array(analyser.fftSize);
 
+    sessionStartedAt = Date.now();
+    tracks = [];
+    motifMemory = [];
+    lastHumanMotif = null;
+
     running = true;
     stopBtn.disabled = false;
     saveBtn.disabled = true;
@@ -127,7 +133,7 @@ function beginHumanTurn(message = "Din tur.") {
 
   phase = "listening";
   document.body.className = "listening";
-  phaseLabel.textContent = "Din tur";
+  phaseLabel.textContent = "Humlan lyssnar";
   statusText.textContent = message;
 
   currentSamples = [];
@@ -181,7 +187,7 @@ function beginMachineDevelopment(previousMotif) {
 
   phase = "developing";
   document.body.className = "developing";
-  phaseLabel.textContent = "Humla driver";
+  phaseLabel.textContent = "Humlan surrar";
   statusText.textContent = responseText("development");
 
   const development = transformMotif(previousMotif, "development");
@@ -468,62 +474,105 @@ function playMotif(motif, seconds, mode) {
 }
 
 function saveLastHumanHum() {
-  if (!lastHumanMotif) return;
+  const sessionTracks = tracks
+    .filter((track) => track.motif && track.contour && track.contour.length)
+    .slice()
+    .reverse()
+    .map((track) => ({
+      owner: track.owner,
+      motif: {
+        ...track.motif,
+        contour: track.motif.contour.map((point) => ({
+          ratio: point.ratio,
+          volume: point.volume,
+          voiced: point.voiced
+        }))
+      }
+    }));
+
+  if (!sessionTracks.length) {
+    statusText.textContent = "Det finns ingen skiva att spara ännu.";
+    return;
+  }
 
   const saved = getSavedHums();
-  const item = {
-    ...lastHumanMotif,
-    title: `Hum ${new Date().toLocaleString("sv-SE", {
+
+  const session = {
+    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    createdAt: Date.now(),
+    startedAt: sessionStartedAt,
+    title: `Skiva ${new Date().toLocaleString("sv-SE", {
       month: "short",
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit"
-    })}`
+    })}`,
+    creature: { ...creature },
+    tracks: sessionTracks
   };
 
-  saved.unshift(item);
-  localStorage.setItem(HUM_STORAGE_KEY, JSON.stringify(saved.slice(0, 24)));
+  saved.unshift(session);
+  localStorage.setItem(HUM_STORAGE_KEY, JSON.stringify(saved.slice(0, 12)));
 
-  statusText.textContent = "Humla sparade avtrycket. Inte rösten — minnet.";
+  statusText.textContent = "Humlan sparade hela skivan. Inte rösten — spåren.";
   saveBtn.disabled = true;
   updateRevisitButton();
 }
 
 function revisitSavedHum() {
   const saved = getSavedHums();
+
   if (!saved.length) {
-    statusText.textContent = "Det finns inga sparade hum ännu.";
+    statusText.textContent = "Det finns inga sparade skivor ännu.";
     return;
   }
 
   ensureAudioContextOnly();
 
-  const original = saved[Math.floor(Math.random() * saved.length)];
-  const remembered = rememberMotif(original);
+  const session = saved[Math.floor(Math.random() * saved.length)];
+  const rememberedTracks = session.tracks.map((track) => ({
+    owner: track.owner === "human" ? "memory" : track.owner,
+    motif: rememberMotif(track.motif)
+  }));
 
   running = false;
   phase = "revisiting";
   document.body.className = "revisiting";
-  phaseLabel.textContent = "Återbesök";
-  statusText.textContent = `Humla minns: ${original.title || "ett gammalt hum"}`;
+  phaseLabel.textContent = "Humlan minns";
+  statusText.textContent = `Humlan återbesöker: ${session.title || "en gammal skiva"}`;
 
-  activeTrack = createTrack("memory", remembered);
-  tracks.unshift(activeTrack);
-  trimTracks();
+  tracks = [];
+  let index = 0;
 
-  playMotif(remembered, PHASE_SECONDS, "development");
+  function playNextMemoryTrack() {
+    if (index >= rememberedTracks.length) {
+      phase = "ready";
+      document.body.className = "";
+      phaseLabel.textContent = "Redo";
+      timerLabel.textContent = "5.0";
+      progressBar.style.width = "0%";
+      statusText.textContent = "Skivan är återbesökt. Minnet ändrade form lite.";
+      activeTrack = null;
+      updateRevisitButton();
+      return;
+    }
+
+    const item = rememberedTracks[index];
+    activeTrack = createTrack(item.owner, item.motif);
+    tracks.unshift(activeTrack);
+    trimTracks();
+
+    playMotif(item.motif, PHASE_SECONDS, "development");
+
+    startTimedPhase(PHASE_SECONDS, () => {
+      activeTrack.complete = true;
+      index += 1;
+      playNextMemoryTrack();
+    });
+  }
 
   if (!animationFrame) animateRevisit();
-
-  startTimedPhase(PHASE_SECONDS, () => {
-    activeTrack.complete = true;
-    phase = "ready";
-    document.body.className = "";
-    phaseLabel.textContent = "Redo";
-    timerLabel.textContent = "5.0";
-    progressBar.style.width = "0%";
-    statusText.textContent = "Minnet försvann nästan, men stommen finns kvar.";
-  });
+  playNextMemoryTrack();
 }
 
 function ensureAudioContextOnly() {
@@ -597,18 +646,18 @@ function stopAllOscillators() {
 function responseText(kind) {
   if (kind === "response") {
     return randomFrom([
-      "Humla hörde något. Den svarar med gadden.",
-      "Humla tuggar på din krok och ristar tillbaka.",
+      "Humlan svarar med gadden mot skivan.",
+      "Humlan hörde något och svarar försiktigt.",
       "Den lilla ljudvarelsen svarar.",
-      "Humla speglar dig, men lite fel med flit."
+      "Humlan speglar dig, men lite fel med flit."
     ]);
   }
 
   return randomFrom([
-    "Humla fortsätter själv en stund.",
-    "Nu tar den initiativ och driver melodin vidare.",
-    "Humla blir lite modigare.",
-    "Den hittade en sidoväg i melodin."
+    "Humlan surrar vidare.",
+    "Humlan hittar en sidoväg i melodin.",
+    "Humlan minns formen och surrar om den.",
+    "Humlan stannar kvar i spåret en stund."
   ]);
 }
 
@@ -778,35 +827,35 @@ function contourFromLiveSamples(samples) {
 function trackColor(owner, age) {
   if (age > 0) {
     return {
-      stroke: (a) => `rgba(210,205,195,${a})`,
-      shadow: "rgba(255,247,232,0.15)"
+      stroke: (a) => `rgba(210,216,198,${a})`,
+      shadow: "rgba(255,248,220,0.14)"
     };
   }
 
   if (owner === "human") {
     return {
-      stroke: (a) => `rgba(255,203,112,${a})`,
-      shadow: "rgba(255,203,112,0.55)"
+      stroke: (a) => `rgba(255,211,107,${a})`,
+      shadow: "rgba(255,211,107,0.55)"
     };
   }
 
   if (owner === "machineDevelop") {
     return {
-      stroke: (a) => `rgba(232,124,255,${a})`,
-      shadow: "rgba(232,124,255,0.45)"
+      stroke: (a) => `rgba(183,240,107,${a})`,
+      shadow: "rgba(183,240,107,0.45)"
     };
   }
 
   if (owner === "memory") {
     return {
-      stroke: (a) => `rgba(180,170,255,${a})`,
-      shadow: "rgba(180,170,255,0.45)"
+      stroke: (a) => `rgba(240,107,154,${a})`,
+      shadow: "rgba(240,107,154,0.45)"
     };
   }
 
   return {
-    stroke: (a) => `rgba(143,255,210,${a})`,
-    shadow: "rgba(143,255,210,0.45)"
+    stroke: (a) => `rgba(142,230,168,${a})`,
+    shadow: "rgba(142,230,168,0.45)"
   };
 }
 
@@ -816,18 +865,18 @@ function drawEngravingPoint() {
   const cy = rect.height / 2;
   const outerR = rect.width * 0.43;
 
-  // Det här är där gadden träffar ytterspåret.
   const x = cx;
   const y = cy - outerR;
 
-  let fill = "rgba(255,247,232,0.35)";
+  let fill = "rgba(255,248,220,0.35)";
 
-  if (phase === "listening") fill = "rgba(255,203,112,0.9)";
-  if (phase === "responding") fill = "rgba(143,255,210,0.9)";
-  if (phase === "developing") fill = "rgba(232,124,255,0.9)";
-  if (phase === "revisiting") fill = "rgba(180,170,255,0.9)";
+  if (phase === "listening") fill = "rgba(255,211,107,0.92)";
+  if (phase === "responding") fill = "rgba(142,230,168,0.92)";
+  if (phase === "developing") fill = "rgba(183,240,107,0.92)";
+  if (phase === "revisiting") fill = "rgba(240,107,154,0.92)";
 
   ctx.save();
+
   ctx.beginPath();
   ctx.arc(x, y, 5.5, 0, Math.PI * 2);
   ctx.fillStyle = fill;
@@ -835,11 +884,10 @@ function drawEngravingPoint() {
   ctx.shadowColor = fill;
   ctx.fill();
 
-  // Kort liten “ristlinje” från gadden, inte genom hela skivan.
   ctx.beginPath();
-  ctx.moveTo(x, y - 24);
+  ctx.moveTo(x, y - 22);
   ctx.lineTo(x, y - 4);
-  ctx.strokeStyle = "rgba(255,247,232,0.42)";
+  ctx.strokeStyle = "rgba(255,248,220,0.42)";
   ctx.lineWidth = 1.4;
   ctx.stroke();
 
