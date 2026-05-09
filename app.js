@@ -383,9 +383,8 @@ function chooseTransform(mode) {
 function playMotif(motif, seconds, mode) {
   if (!audioCtx) return;
 
-  const now = audioCtx.currentTime + 0.04;
+  const now = audioCtx.currentTime + 0.035;
   const total = seconds;
-  const step = total / motif.contour.length;
 
   const master = audioCtx.createGain();
   const compressor = audioCtx.createDynamicsCompressor();
@@ -396,81 +395,139 @@ function playMotif(motif, seconds, mode) {
   compressor.attack.setValueAtTime(0.006, now);
   compressor.release.setValueAtTime(0.18, now);
 
+  // Kort fade in/out så blocken inte får hårda kanter.
   master.gain.setValueAtTime(0.0001, now);
-  master.gain.linearRampToValueAtTime(0.82, now + 0.08);
-  master.gain.linearRampToValueAtTime(0.82, now + total - 0.16);
-  master.gain.linearRampToValueAtTime(0.0001, now + total);
+  master.gain.linearRampToValueAtTime(0.78, now + 0.05);
+  master.gain.linearRampToValueAtTime(0.78, now + total - 0.18);
+  master.gain.linearRampToValueAtTime(0.0001, now + total + 0.08);
 
   master.connect(compressor);
   compressor.connect(audioCtx.destination);
 
   const filter = audioCtx.createBiquadFilter();
   filter.type = "lowpass";
-  filter.frequency.setValueAtTime(mode === "development" ? 1350 : 1050, now);
-  filter.Q.setValueAtTime(2.8, now);
+  filter.frequency.setValueAtTime(mode === "development" ? 1700 : 1300, now);
+  filter.Q.setValueAtTime(2.1, now);
   filter.connect(master);
 
-  const delay = audioCtx.createDelay(0.45);
-  delay.delayTime.setValueAtTime(mode === "development" ? 0.22 : 0.16, now);
-
+  const delay = audioCtx.createDelay(0.55);
   const feedback = audioCtx.createGain();
-  feedback.gain.setValueAtTime(mode === "development" ? 0.22 : 0.14, now);
+  const delayMix = audioCtx.createGain();
+
+  delay.delayTime.setValueAtTime(mode === "development" ? 0.24 : 0.18, now);
+  feedback.gain.setValueAtTime(mode === "development" ? 0.24 : 0.16, now);
+  delayMix.gain.setValueAtTime(mode === "development" ? 0.24 : 0.16, now);
 
   delay.connect(feedback);
   feedback.connect(delay);
-  delay.connect(master);
+  delay.connect(delayMix);
+  delayMix.connect(master);
 
-  const osc = audioCtx.createOscillator();
-  const oscGain = audioCtx.createGain();
+  const notes = makeSteppedPhrase(motif, mode);
+  const totalWeight = notes.reduce((sum, note) => sum + note.hold, 0);
+  let cursor = now;
 
-  osc.type = mode === "development" ? "triangle" : "sine";
-  osc.frequency.setValueAtTime(motif.baseFreq, now);
-  oscGain.gain.setValueAtTime(0.0001, now);
+  const createdNodes = [master, compressor, filter, delay, feedback, delayMix];
 
-  osc.connect(oscGain);
-  oscGain.connect(filter);
-  oscGain.connect(delay);
+  notes.forEach((note, index) => {
+    const duration = (total * note.hold) / totalWeight;
+    const start = cursor;
+    const end = Math.min(now + total, cursor + duration * 0.94);
+    cursor += duration;
 
-  const hum = audioCtx.createOscillator();
-  const humGain = audioCtx.createGain();
+    if (note.rest) {
+      return;
+    }
 
-  hum.type = "sine";
-  hum.frequency.setValueAtTime(motif.baseFreq * 0.5, now);
-  humGain.gain.setValueAtTime(0.0001, now);
-  hum.connect(humGain);
-  humGain.connect(filter);
+    const osc = audioCtx.createOscillator();
+    const sub = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const subGain = audioCtx.createGain();
 
-  motif.contour.forEach((point, i) => {
-    const t = now + i * step;
-    const freq = clamp(motif.baseFreq * point.ratio, MIN_FREQ, MAX_FREQ);
-    const gain = point.voiced
-      ? 0.08 + point.volume * 0.34 * motif.energy
-      : 0.0001;
+    // Sine + triangle ger mer humla/kropp än ren oscillator.
+    osc.type = mode === "development" ? "triangle" : "sine";
+    sub.type = "sine";
 
-    osc.frequency.linearRampToValueAtTime(freq, t);
-    hum.frequency.linearRampToValueAtTime(freq * 0.5, t);
-    oscGain.gain.linearRampToValueAtTime(gain, t);
-    humGain.gain.linearRampToValueAtTime(gain * 0.34, t);
+    const previousFreq = index > 0 ? notes[index - 1].freq : note.freq;
+    const glideStart = clamp(previousFreq, MIN_FREQ, MAX_FREQ);
+    const targetFreq = clamp(note.freq, MIN_FREQ, MAX_FREQ);
+
+    osc.frequency.setValueAtTime(glideStart, start);
+    osc.frequency.linearRampToValueAtTime(targetFreq, start + 0.055);
+
+    sub.frequency.setValueAtTime(glideStart * 0.5, start);
+    sub.frequency.linearRampToValueAtTime(targetFreq * 0.5, start + 0.055);
+
+    const peak = clamp(0.075 + note.volume * 0.22 * motif.energy, 0.05, 0.34);
+    scheduleHumEnvelope(gain.gain, start, end, peak, false);
+    scheduleHumEnvelope(subGain.gain, start, end, peak * 0.32, false);
+
+    // Lite kroppslig puls så det blir mer mmmm-MMMM än pip.
+    const trem = audioCtx.createOscillator();
+    const tremGain = audioCtx.createGain();
+    const tremDepth = audioCtx.createGain();
+
+    trem.type = "sine";
+    trem.frequency.setValueAtTime(mode === "development" ? 5.2 : 4.1, start);
+    tremGain.gain.setValueAtTime(0.5, start);
+    tremDepth.gain.setValueAtTime(peak * 0.18, start);
+
+    trem.connect(tremGain);
+    tremGain.connect(tremDepth);
+    tremDepth.connect(gain.gain);
+
+    osc.connect(gain);
+    sub.connect(subGain);
+    gain.connect(filter);
+    subGain.connect(filter);
+
+    // Bara vissa toner får eko, annars blir det gröt.
+    if (index % 3 === 1 || mode === "development") {
+      gain.connect(delay);
+      subGain.connect(delay);
+    }
+
+    osc.start(start);
+    sub.start(start);
+    trem.start(start);
+
+    osc.stop(end + 0.08);
+    sub.stop(end + 0.08);
+    trem.stop(end + 0.08);
+
+    activeOscillators.push(osc, sub, trem);
+    createdNodes.push(osc, sub, gain, subGain, trem, tremGain, tremDepth);
   });
 
-  oscGain.gain.linearRampToValueAtTime(0.0001, now + total);
-  humGain.gain.linearRampToValueAtTime(0.0001, now + total);
+  // En svag sammanhållande bordun, så blockövergångar inte känns helt döda.
+  const drone = audioCtx.createOscillator();
+  const droneGain = audioCtx.createGain();
 
-  osc.start(now);
-  hum.start(now);
-  osc.stop(now + total + 0.1);
-  hum.stop(now + total + 0.1);
+  drone.type = "sine";
+  drone.frequency.setValueAtTime(clamp(motif.baseFreq * 0.5, MIN_FREQ, MAX_FREQ), now);
+  droneGain.gain.setValueAtTime(0.0001, now);
+  droneGain.gain.linearRampToValueAtTime(mode === "development" ? 0.035 : 0.025, now + 0.16);
+  droneGain.gain.linearRampToValueAtTime(0.0001, now + total + 0.18);
 
-  activeOscillators.push(osc, hum);
+  drone.connect(droneGain);
+  droneGain.connect(master);
+  drone.start(now);
+  drone.stop(now + total + 0.22);
 
-  osc.onended = () => {
-    activeOscillators = activeOscillators.filter((o) => o !== osc && o !== hum);
-    safeDisconnect(master);
-    safeDisconnect(compressor);
-    safeDisconnect(filter);
-    safeDisconnect(delay);
-    safeDisconnect(feedback);
-  };
+  activeOscillators.push(drone);
+  createdNodes.push(drone, droneGain);
+
+  setTimeout(() => {
+    activeOscillators = activeOscillators.filter((osc) => {
+      try {
+        return osc.playbackState !== osc.FINISHED_STATE;
+      } catch {
+        return true;
+      }
+    });
+
+    createdNodes.forEach(safeDisconnect);
+  }, (total + 0.8) * 1000);
 }
 
 function saveLastHumanHum() {
@@ -646,10 +703,10 @@ function stopAllOscillators() {
 function responseText(kind) {
   if (kind === "response") {
     return randomFrom([
-      "Humlan svarar med gadden mot skivan.",
-      "Humlan hörde något och svarar försiktigt.",
-      "Den lilla ljudvarelsen svarar.",
-      "Humlan speglar dig, men lite fel med flit."
+      "Humlan surrar vidare i små toner.",
+      "Humlan hittar en krok och nynnar runt den.",
+      "Humlan minns formen och surrar om den.",
+      "Humlan lämnar små pauser åt dig."
     ]);
   }
 
@@ -976,6 +1033,82 @@ function resample(points, targetLength) {
   }
 
   return result;
+}
+
+function makeSteppedPhrase(motif, mode) {
+  const noteCount = mode === "development" ? 14 : 12;
+  const source = resample(motif.contour, noteCount);
+
+  const scale = [0, 2, 3, 5, 7, 9, 10]; // mjuk minor/pentatonisk-ish färg
+  const rootFreq = clamp(motif.baseFreq, MIN_FREQ, MAX_FREQ);
+
+  return source.map((point, index) => {
+    const rawSemitones = Math.round(12 * Math.log2(point.ratio || 1));
+    const snapped = snapToScale(rawSemitones, scale);
+    const phraseWave = Math.sin((index / Math.max(1, noteCount - 1)) * Math.PI);
+
+    let shouldRest = false;
+
+    // Små andningar. Mer i "surrar" än "svarar".
+    if (mode === "development") {
+      shouldRest = Math.random() < 0.16 || (index === 5 && Math.random() < 0.55);
+    } else {
+      shouldRest = Math.random() < 0.09;
+    }
+
+    // Första och sista tonen bör oftast finnas.
+    if (index === 0 || index === noteCount - 1) shouldRest = false;
+
+    const octaveNudge =
+      mode === "development" && index > noteCount * 0.55 && Math.random() < 0.22
+        ? 12
+        : 0;
+
+    const semitones = snapped + octaveNudge;
+    const freq = clamp(rootFreq * Math.pow(2, semitones / 12), MIN_FREQ, MAX_FREQ);
+
+    return {
+      freq,
+      volume: clamp(0.22 + point.volume * 0.78 + phraseWave * 0.12, 0.08, 1),
+      rest: shouldRest || !point.voiced,
+      hold: mode === "development" && index % 4 === 3 ? 1.22 : 1
+    };
+  });
+}
+
+function snapToScale(semitones, scale) {
+  const octave = Math.floor(semitones / 12);
+  const within = ((semitones % 12) + 12) % 12;
+
+  let best = scale[0];
+  let bestDistance = Infinity;
+
+  for (const step of scale) {
+    const distance = Math.abs(step - within);
+    if (distance < bestDistance) {
+      best = step;
+      bestDistance = distance;
+    }
+  }
+
+  return octave * 12 + best;
+}
+
+function scheduleHumEnvelope(gainParam, start, end, peak, rest = false) {
+  gainParam.cancelScheduledValues(start);
+  gainParam.setValueAtTime(0.0001, start);
+
+  if (rest) {
+    gainParam.linearRampToValueAtTime(0.0001, end);
+    return;
+  }
+
+  const attack = Math.min(0.08, (end - start) * 0.22);
+  const release = Math.min(0.16, (end - start) * 0.34);
+
+  gainParam.linearRampToValueAtTime(peak, start + attack);
+  gainParam.linearRampToValueAtTime(peak * 0.82, Math.max(start + attack, end - release));
+  gainParam.linearRampToValueAtTime(0.0001, end);
 }
 
 function weightedChoice(items) {
