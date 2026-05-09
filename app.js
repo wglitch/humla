@@ -650,57 +650,49 @@ function draw() {
   const rect = canvas.getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
 
-  const elapsed = performance.now() * 0.001;
-  const phaseProgress = activeTrack ? activeTrack.progress : 0;
-  const rotation = phase === "ready" || phase === "stopped"
-    ? elapsed * 0.08
-    : phaseProgress * Math.PI * 2;
-
-  drawRecordBase(rotation);
-  drawAllTracks(rotation);
-  drawNeedleGlow();
+  drawRecordBase();
+  drawAllTracks();
+  drawEngravingPoint();
 }
 
-function drawRecordBase(rotation) {
+function drawRecordBase() {
   const rect = canvas.getBoundingClientRect();
   const cx = rect.width / 2;
   const cy = rect.height / 2;
   const maxR = rect.width * 0.44;
 
   ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(rotation);
 
-  const gradient = ctx.createRadialGradient(0, 0, rect.width * 0.06, 0, 0, maxR);
+  const gradient = ctx.createRadialGradient(cx, cy, rect.width * 0.06, cx, cy, maxR);
   gradient.addColorStop(0, "rgba(255,247,232,0.13)");
   gradient.addColorStop(0.48, "rgba(255,247,232,0.045)");
   gradient.addColorStop(1, "rgba(255,247,232,0.018)");
 
   ctx.beginPath();
-  ctx.arc(0, 0, maxR, 0, Math.PI * 2);
+  ctx.arc(cx, cy, maxR, 0, Math.PI * 2);
   ctx.fillStyle = gradient;
   ctx.fill();
 
-  ctx.globalAlpha = 0.19;
+  ctx.globalAlpha = 0.18;
   ctx.lineWidth = 1;
 
   for (let r = rect.width * 0.13; r <= maxR; r += rect.width * 0.032) {
     ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(255,247,232,0.34)";
     ctx.stroke();
   }
 
   ctx.globalAlpha = 0.5;
   ctx.beginPath();
-  ctx.arc(0, 0, rect.width * 0.052, 0, Math.PI * 2);
+  ctx.arc(cx, cy, rect.width * 0.052, 0, Math.PI * 2);
   ctx.fillStyle = "rgba(255,203,112,0.28)";
   ctx.fill();
 
   ctx.restore();
 }
 
-function drawAllTracks(rotation) {
+function drawAllTracks() {
   const rect = canvas.getBoundingClientRect();
 
   tracks.forEach((track, index) => {
@@ -716,11 +708,11 @@ function drawAllTracks(rotation) {
       ? track.contour
       : contourFromLiveSamples(track.liveSamples);
 
-    drawTrack(track, contour, radius, progress, rotation, age);
+    drawTrack(track, contour, radius, progress, age);
   });
 }
 
-function drawTrack(track, contour, radius, progress, rotation, age) {
+function drawTrack(track, contour, radius, progress, age) {
   if (!contour.length) return;
 
   const rect = canvas.getBoundingClientRect();
@@ -728,26 +720,27 @@ function drawTrack(track, contour, radius, progress, rotation, age) {
   const cy = rect.height / 2;
   const visiblePoints = Math.max(2, Math.floor(contour.length * progress));
   const color = trackColor(track.owner, age);
-  const alpha = age === 0 ? 0.96 : clamp(0.74 - age * 0.055, 0.18, 0.74);
+  const alpha = age === 0 ? 0.96 : clamp(0.72 - age * 0.06, 0.16, 0.72);
   const grooveNoise = track.owner === "human" ? 10 : 14;
 
   ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(rotation);
 
   ctx.beginPath();
 
   for (let i = 0; i < visiblePoints; i++) {
     const point = contour[i];
     const t = i / contour.length;
+
+    // Toppen är alltid gaddens punkt.
+    // Spåret ristas medurs under fem sekunder.
     const angle = -Math.PI / 2 + t * Math.PI * 2;
 
     const melodic = Math.log2(point.ratio || 1) * grooveNoise;
     const energetic = (point.volume || 0) * 7;
     const r = radius + melodic + energetic;
 
-    const x = Math.cos(angle) * r;
-    const y = Math.sin(angle) * r;
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
 
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
@@ -761,12 +754,12 @@ function drawTrack(track, contour, radius, progress, rotation, age) {
   ctx.shadowBlur = age === 0 ? 16 : 0;
   ctx.stroke();
 
-  // Grått minnesspår under färgen, särskilt tydligt när spåret åldras.
-  ctx.globalAlpha = clamp(0.18 + age * 0.025, 0.18, 0.46);
+  // Basgroove/minnesspår
+  ctx.globalAlpha = age === 0 ? 0.18 : clamp(0.32 + age * 0.018, 0.32, 0.52);
   ctx.lineWidth = 0.8;
   ctx.shadowBlur = 0;
   ctx.beginPath();
-  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.strokeStyle = "rgba(255,247,232,0.42)";
   ctx.stroke();
 
@@ -817,27 +810,39 @@ function trackColor(owner, age) {
   };
 }
 
-function drawNeedleGlow() {
+function drawEngravingPoint() {
   const rect = canvas.getBoundingClientRect();
   const cx = rect.width / 2;
-  const y = rect.height * 0.07;
-  const tipY = rect.height * 0.075;
+  const cy = rect.height / 2;
   const outerR = rect.width * 0.43;
+
+  // Det här är där gadden träffar ytterspåret.
+  const x = cx;
+  const y = cy - outerR;
+
+  let fill = "rgba(255,247,232,0.35)";
+
+  if (phase === "listening") fill = "rgba(255,203,112,0.9)";
+  if (phase === "responding") fill = "rgba(143,255,210,0.9)";
+  if (phase === "developing") fill = "rgba(232,124,255,0.9)";
+  if (phase === "revisiting") fill = "rgba(180,170,255,0.9)";
 
   ctx.save();
   ctx.beginPath();
-  ctx.arc(cx, rect.height / 2 - outerR, 5, 0, Math.PI * 2);
-  ctx.fillStyle =
-    phase === "listening"
-      ? "rgba(255,203,112,0.85)"
-      : phase === "responding"
-      ? "rgba(143,255,210,0.85)"
-      : phase === "developing"
-      ? "rgba(232,124,255,0.85)"
-      : "rgba(255,247,232,0.35)";
-  ctx.shadowBlur = 18;
-  ctx.shadowColor = ctx.fillStyle;
+  ctx.arc(x, y, 5.5, 0, Math.PI * 2);
+  ctx.fillStyle = fill;
+  ctx.shadowBlur = 20;
+  ctx.shadowColor = fill;
   ctx.fill();
+
+  // Kort liten “ristlinje” från gadden, inte genom hela skivan.
+  ctx.beginPath();
+  ctx.moveTo(x, y - 24);
+  ctx.lineTo(x, y - 4);
+  ctx.strokeStyle = "rgba(255,247,232,0.42)";
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+
   ctx.restore();
 }
 
