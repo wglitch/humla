@@ -1,15 +1,15 @@
 :root {
-  --bg-a: #07130d;
-  --bg-b: #16351f;
-  --ink: #fff8dc;
-  --muted: rgba(255, 248, 220, 0.68);
-  --soft: rgba(255, 248, 220, 0.11);
-  --glow: rgba(244, 201, 93, 0.42);
+  --bg-a: #111b12;
+  --bg-b: #3f6f38;
+  --ink: #fff7df;
+  --muted: rgba(255, 247, 223, 0.72);
+  --soft: rgba(255, 247, 223, 0.12);
+  --glow: rgba(255, 202, 86, 0.44);
   --accent: #f4c95d;
-  --accent-b: #f06b9a;
-  --machine: #8ee6a8;
+  --accent-b: #ec6f9c;
+  --machine: #9ee07b;
   --human: #ffd36b;
-  --develop: #b7f06b;
+  --develop: #f49ac1;
   --danger: #ff7a90;
 }
 
@@ -22,10 +22,10 @@ body {
   margin: 0;
   min-height: 100%;
   background:
-    radial-gradient(circle at 24% 12%, rgba(244, 201, 93, 0.16), transparent 22rem),
-    radial-gradient(circle at 82% 28%, rgba(240, 107, 154, 0.11), transparent 18rem),
-    radial-gradient(circle at 72% 76%, rgba(142, 230, 168, 0.16), transparent 24rem),
-  linear-gradient(145deg, var(--bg-a), var(--bg-b));
+    radial-gradient(circle at 18% 18%, rgba(255, 211, 107, 0.22), transparent 20rem),
+    radial-gradient(circle at 82% 18%, rgba(236, 111, 156, 0.2), transparent 18rem),
+    radial-gradient(circle at 68% 82%, rgba(158, 224, 123, 0.22), transparent 24rem),
+    linear-gradient(145deg, var(--bg-a), var(--bg-b) 58%, #5d823f);
   color: var(--ink);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -36,7 +36,46 @@ body {
   overflow-x: hidden;
 }
 
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: auto 0 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+body::before {
+  height: 46vh;
+  background:
+    radial-gradient(circle at 7% 68%, #fff2ba 0 0.24rem, transparent 0.28rem),
+    radial-gradient(circle at 9% 68%, #f27da7 0 0.7rem, transparent 0.74rem),
+    radial-gradient(circle at 24% 76%, #f6cf55 0 0.24rem, transparent 0.28rem),
+    radial-gradient(circle at 26% 76%, #fbf6e2 0 0.78rem, transparent 0.82rem),
+    radial-gradient(circle at 43% 62%, #51321d 0 0.18rem, transparent 0.22rem),
+    radial-gradient(circle at 45% 62%, #df6949 0 0.72rem, transparent 0.76rem),
+    radial-gradient(circle at 63% 82%, #fff2ba 0 0.24rem, transparent 0.28rem),
+    radial-gradient(circle at 65% 82%, #d88df0 0 0.86rem, transparent 0.9rem),
+    radial-gradient(circle at 87% 70%, #f6cf55 0 0.22rem, transparent 0.26rem),
+    radial-gradient(circle at 89% 70%, #fbf6e2 0 0.75rem, transparent 0.8rem),
+    linear-gradient(transparent 0 34%, rgba(31, 74, 31, 0.16));
+  opacity: 0.55;
+}
+
+body::after {
+  height: 32vh;
+  background:
+    linear-gradient(76deg, transparent 0 9%, rgba(198, 226, 120, 0.4) 9.2% 9.8%, transparent 10% 100%),
+    linear-gradient(96deg, transparent 0 23%, rgba(140, 188, 87, 0.46) 23.2% 23.7%, transparent 24% 100%),
+    linear-gradient(83deg, transparent 0 41%, rgba(220, 231, 128, 0.34) 41.2% 41.7%, transparent 42% 100%),
+    linear-gradient(101deg, transparent 0 61%, rgba(153, 199, 88, 0.45) 61.2% 61.7%, transparent 62% 100%),
+    linear-gradient(87deg, transparent 0 78%, rgba(214, 222, 112, 0.36) 78.2% 78.8%, transparent 79% 100%);
+  opacity: 0.7;
+}
+
 .app {
+  position: relative;
+  z-index: 1;
   width: min(100%, 760px);
   min-height: 100vh;
   min-height: 100svh;
@@ -96,7 +135,7 @@ h1 {
 .orb {
   width: 48%;
   aspect-ratio: 1;
-  border-radius: 999px;
+  border-radius: 50%;
   background:
     radial-gradient(circle at 35% 28%, rgba(255, 255, 255, 0.28), transparent 20%),
     radial-gradient(circle at 60% 70%, rgba(143, 255, 210, 0.16), transparent 45%),
@@ -170,7 +209,7 @@ button:disabled {
   padding: 16px;
   border: 1px solid rgba(255, 247, 232, 0.12);
   background: rgba(255, 247, 232, 0.07);
-  border-radius: 22px;
+  border-radius: 8px;
   backdrop-filter: blur(12px);
 }
 
@@ -249,6 +288,7 @@ body.developing .orb {
   height: 118px;
   z-index: 5;
   pointer-events: none;
+  animation: bee-drift 7s infinite ease-in-out;
 }
 
 .bee {
@@ -256,7 +296,7 @@ body.developing .orb {
   width: 118px;
   height: 118px;
   transform: rotate(3deg);
-  filter: drop-shadow(0 0 14px rgba(255, 203, 112, 0.24));
+  filter: drop-shadow(0 12px 16px rgba(26, 20, 12, 0.28));
 }
 
 .bee-body {
@@ -276,6 +316,24 @@ body.developing .orb {
       rgba(255, 203, 112, 0.75) 64% 100%
     );
   border: 1px solid rgba(255, 247, 232, 0.24);
+  box-shadow:
+    inset 0 7px 10px rgba(255, 255, 255, 0.24),
+    inset 0 -9px 12px rgba(26, 18, 16, 0.34);
+}
+
+.bee-fuzz {
+  position: absolute;
+  left: 29px;
+  top: 28px;
+  width: 70px;
+  height: 48px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 28% 44%, rgba(255, 247, 210, 0.38) 0 1px, transparent 2px),
+    radial-gradient(circle at 45% 22%, rgba(255, 247, 210, 0.34) 0 1px, transparent 2px),
+    radial-gradient(circle at 64% 54%, rgba(255, 247, 210, 0.28) 0 1px, transparent 2px);
+  mix-blend-mode: screen;
+  opacity: 0.72;
 }
 
 .bee-head {
@@ -287,6 +345,7 @@ body.developing .orb {
   border-radius: 50%;
   background: rgba(38, 27, 45, 0.96);
   border: 1px solid rgba(255, 247, 232, 0.18);
+  box-shadow: inset 4px 4px 9px rgba(255, 255, 255, 0.08);
 }
 
 .bee-head::after {
@@ -308,7 +367,7 @@ body.developing .orb {
   border-radius: 70% 35% 70% 35%;
   background:
     radial-gradient(circle at 35% 28%, rgba(255,255,255,0.24), transparent 38%),
-    rgba(255, 247, 232, 0.13);
+    rgba(255, 247, 232, 0.18);
   border: 1px solid rgba(255, 247, 232, 0.18);
   transform-origin: bottom center;
 }
@@ -373,6 +432,13 @@ body.revisiting .wing {
   animation: wingbuzz 80ms infinite alternate ease-in-out;
 }
 
+body.listening .bee-rig,
+body.responding .bee-rig,
+body.developing .bee-rig,
+body.revisiting .bee-rig {
+  animation-duration: 3.8s;
+}
+
 body.listening .stinger::after,
 body.responding .stinger::after,
 body.developing .stinger::after,
@@ -388,5 +454,20 @@ body.revisiting .stinger::after {
   to {
     opacity: 0.92;
     scale: 1.05 0.93;
+  }
+}
+
+@keyframes bee-drift {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  34% {
+    transform: translate3d(-14px, 10px, 0) rotate(-5deg);
+  }
+  68% {
+    transform: translate3d(9px, -8px, 0) rotate(4deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
   }
 }

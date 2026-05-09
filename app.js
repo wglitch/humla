@@ -4,6 +4,8 @@ const MIN_FREQ = 85;
 const MAX_FREQ = 900;
 const HUM_STORAGE_KEY = "humla_saved_sessions_v1";
 const MAX_RINGS = 12;
+const DUET_OVERLAP_SECONDS = 0.55;
+const RECORD_SPIN_RPS = 0.11;
 
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
@@ -32,8 +34,13 @@ let animationFrame = null;
 let sampleTimer = null;
 let phaseStart = 0;
 let phaseDuration = PHASE_SECONDS * 1000;
+let phaseAlmostDoneTimer = null;
 let activeOscillators = [];
 let sessionStartedAt = Date.now();
+let spinStartedAt = performance.now();
+let spinBase = 0;
+let recordSpinning = false;
+let playbackGeneration = 0;
 
 const creature = {
   mood: "curious",
@@ -105,8 +112,11 @@ async function startHumla() {
 function stopHumla() {
   running = false;
   phase = "stopped";
+  playbackGeneration += 1;
+  stopRecordSpin();
 
   clearInterval(sampleTimer);
+  clearTimeout(phaseAlmostDoneTimer);
   stopAllOscillators();
 
   if (micStream) micStream.getTracks().forEach((track) => track.stop());
@@ -131,6 +141,8 @@ function stopHumla() {
 function beginHumanTurn(message = "Din tur.") {
   if (!running) return;
 
+  clearTimeout(phaseAlmostDoneTimer);
+  startRecordSpin();
   phase = "listening";
   document.body.className = "listening";
   phaseLabel.textContent = "Humlan lyssnar";
@@ -164,6 +176,7 @@ function beginMachineResponse(humanMotif) {
   if (!running) return;
 
   clearInterval(sampleTimer);
+  clearTimeout(phaseAlmostDoneTimer);
   phase = "responding";
   document.body.className = "responding";
   phaseLabel.textContent = "Humla svarar";
@@ -174,7 +187,13 @@ function beginMachineResponse(humanMotif) {
   tracks.unshift(activeTrack);
   trimTracks();
 
-  playMotif(response, PHASE_SECONDS, "response");
+  playTransitionHum(humanMotif, response);
+  playMotif(response, PHASE_SECONDS + DUET_OVERLAP_SECONDS * 0.55, "response", {
+    fadeIn: 0.22,
+    fadeOut: 0.34,
+    gain: 0.92,
+    lilt: 0.75
+  });
 
   startTimedPhase(PHASE_SECONDS, () => {
     activeTrack.complete = true;
@@ -185,6 +204,7 @@ function beginMachineResponse(humanMotif) {
 function beginMachineDevelopment(previousMotif) {
   if (!running) return;
 
+  clearTimeout(phaseAlmostDoneTimer);
   phase = "developing";
   document.body.className = "developing";
   phaseLabel.textContent = "Humlan surrar";
@@ -195,7 +215,12 @@ function beginMachineDevelopment(previousMotif) {
   tracks.unshift(activeTrack);
   trimTracks();
 
-  playMotif(development, PHASE_SECONDS, "development");
+  playMotif(development, PHASE_SECONDS + DUET_OVERLAP_SECONDS, "development", {
+    fadeIn: 0.38,
+    fadeOut: 0.42,
+    gain: 0.82,
+    lilt: 1.1
+  });
 
   startTimedPhase(PHASE_SECONDS, () => {
     activeTrack.complete = true;
@@ -204,9 +229,17 @@ function beginMachineDevelopment(previousMotif) {
   });
 }
 
-function startTimedPhase(seconds, onDone) {
+function startTimedPhase(seconds, onDone, onAlmostDone) {
   phaseStart = performance.now();
   phaseDuration = seconds * 1000;
+  clearTimeout(phaseAlmostDoneTimer);
+
+  if (onAlmostDone) {
+    phaseAlmostDoneTimer = setTimeout(
+      onAlmostDone,
+      Math.max(0, phaseDuration - DUET_OVERLAP_SECONDS * 1000)
+    );
+  }
 
   function tick(now) {
     if (!running && phase !== "revisiting") return;
@@ -222,6 +255,7 @@ function startTimedPhase(seconds, onDone) {
 
     if (elapsed >= phaseDuration) {
       progressBar.style.width = "100%";
+      clearTimeout(phaseAlmostDoneTimer);
       onDone();
     } else {
       requestAnimationFrame(tick);
@@ -380,11 +414,15 @@ function chooseTransform(mode) {
   ]);
 }
 
-function playMotif(motif, seconds, mode) {
+function playMotif(motif, seconds, mode, options = {}) {
   if (!audioCtx) return;
 
-  const now = audioCtx.currentTime + 0.035;
+  const now = options.startAt ?? audioCtx.currentTime + (options.delay ?? 0.035);
   const total = seconds;
+  const fadeIn = options.fadeIn ?? 0.05;
+  const fadeOut = options.fadeOut ?? 0.18;
+  const gainScale = options.gain ?? 1;
+  const lilt = options.lilt ?? 1;
 
   const master = audioCtx.createGain();
   const compressor = audioCtx.createDynamicsCompressor();
@@ -397,8 +435,8 @@ function playMotif(motif, seconds, mode) {
 
   // Kort fade in/out så blocken inte får hårda kanter.
   master.gain.setValueAtTime(0.0001, now);
-  master.gain.linearRampToValueAtTime(0.78, now + 0.05);
-  master.gain.linearRampToValueAtTime(0.78, now + total - 0.18);
+  master.gain.linearRampToValueAtTime(0.78 * gainScale, now + fadeIn);
+  master.gain.linearRampToValueAtTime(0.78 * gainScale, now + Math.max(fadeIn, total - fadeOut));
   master.gain.linearRampToValueAtTime(0.0001, now + total + 0.08);
 
   master.connect(compressor);
@@ -423,7 +461,7 @@ function playMotif(motif, seconds, mode) {
   delay.connect(delayMix);
   delayMix.connect(master);
 
-  const notes = makeSteppedPhrase(motif, mode);
+  const notes = makeSteppedPhrase(motif, mode, lilt);
   const totalWeight = notes.reduce((sum, note) => sum + note.hold, 0);
   let cursor = now;
 
@@ -458,7 +496,7 @@ function playMotif(motif, seconds, mode) {
     sub.frequency.setValueAtTime(glideStart * 0.5, start);
     sub.frequency.linearRampToValueAtTime(targetFreq * 0.5, start + 0.055);
 
-    const peak = clamp(0.075 + note.volume * 0.22 * motif.energy, 0.05, 0.34);
+    const peak = clamp((0.075 + note.volume * 0.22 * motif.energy) * gainScale, 0.04, 0.34);
     scheduleHumEnvelope(gain.gain, start, end, peak, false);
     scheduleHumEnvelope(subGain.gain, start, end, peak * 0.32, false);
 
@@ -506,7 +544,7 @@ function playMotif(motif, seconds, mode) {
   drone.type = "sine";
   drone.frequency.setValueAtTime(clamp(motif.baseFreq * 0.5, MIN_FREQ, MAX_FREQ), now);
   droneGain.gain.setValueAtTime(0.0001, now);
-  droneGain.gain.linearRampToValueAtTime(mode === "development" ? 0.035 : 0.025, now + 0.16);
+  droneGain.gain.linearRampToValueAtTime((mode === "development" ? 0.035 : 0.025) * gainScale, now + 0.16);
   droneGain.gain.linearRampToValueAtTime(0.0001, now + total + 0.18);
 
   drone.connect(droneGain);
@@ -528,6 +566,33 @@ function playMotif(motif, seconds, mode) {
 
     createdNodes.forEach(safeDisconnect);
   }, (total + 0.8) * 1000);
+
+  return {
+    start: now,
+    end: now + total
+  };
+}
+
+function playTransitionHum(fromMotif, toMotif) {
+  if (!audioCtx || !fromMotif || !toMotif) return;
+
+  const now = audioCtx.currentTime + 0.012;
+  const bridge = {
+    ...toMotif,
+    baseFreq: clamp((fromMotif.baseFreq + toMotif.baseFreq) * 0.25, MIN_FREQ, MAX_FREQ),
+    energy: clamp((fromMotif.energy + toMotif.energy) * 0.32, 0.08, 0.45),
+    contour: resample([...fromMotif.contour.slice(-12), ...toMotif.contour.slice(0, 18)], 36),
+    type: "bridge",
+    mode: "bridge"
+  };
+
+  playMotif(bridge, DUET_OVERLAP_SECONDS + 0.32, "bridge", {
+    startAt: now,
+    fadeIn: 0.18,
+    fadeOut: 0.48,
+    gain: 0.42,
+    lilt: 0.4
+  });
 }
 
 function saveLastHumanHum() {
@@ -585,6 +650,8 @@ function revisitSavedHum() {
   }
 
   ensureAudioContextOnly();
+  playbackGeneration += 1;
+  const generation = playbackGeneration;
 
   const session = saved[Math.floor(Math.random() * saved.length)];
   const rememberedTracks = session.tracks.map((track) => ({
@@ -595,41 +662,60 @@ function revisitSavedHum() {
   running = false;
   phase = "revisiting";
   document.body.className = "revisiting";
+  startRecordSpin();
   phaseLabel.textContent = "Humlan minns";
   statusText.textContent = `Humlan återbesöker: ${session.title || "en gammal skiva"}`;
 
   tracks = [];
-  let index = 0;
+  clearTimeout(phaseAlmostDoneTimer);
+  stopAllOscillators();
 
-  function playNextMemoryTrack() {
-    if (index >= rememberedTracks.length) {
-      phase = "ready";
-      document.body.className = "";
-      phaseLabel.textContent = "Redo";
-      timerLabel.textContent = "5.0";
-      progressBar.style.width = "0%";
-      statusText.textContent = "Skivan är återbesökt. Minnet ändrade form lite.";
-      activeTrack = null;
-      updateRevisitButton();
-      return;
-    }
+  const stepSeconds = Math.max(1.8, PHASE_SECONDS - DUET_OVERLAP_SECONDS);
+  const visualTimers = [];
+  const audioStart = audioCtx.currentTime + 0.08;
 
-    const item = rememberedTracks[index];
-    activeTrack = createTrack(item.owner, item.motif);
-    tracks.unshift(activeTrack);
-    trimTracks();
-
-    playMotif(item.motif, PHASE_SECONDS, "development");
-
-    startTimedPhase(PHASE_SECONDS, () => {
-      activeTrack.complete = true;
-      index += 1;
-      playNextMemoryTrack();
+  rememberedTracks.forEach((item, index) => {
+    const startAt = audioStart + index * stepSeconds;
+    playMotif(item.motif, PHASE_SECONDS + DUET_OVERLAP_SECONDS, "development", {
+      startAt,
+      fadeIn: index === 0 ? 0.16 : 0.7,
+      fadeOut: 0.8,
+      gain: item.owner === "memory" ? 0.62 : 0.78,
+      lilt: 1.35
     });
-  }
+
+    const timer = setTimeout(() => {
+      if (generation !== playbackGeneration || phase !== "revisiting") return;
+
+      if (activeTrack) activeTrack.complete = true;
+      activeTrack = createTrack(item.owner, item.motif);
+      tracks.unshift(activeTrack);
+      trimTracks();
+
+      phaseStart = performance.now();
+      phaseDuration = PHASE_SECONDS * 1000;
+    }, Math.max(0, (startAt - audioCtx.currentTime) * 1000));
+
+    visualTimers.push(timer);
+  });
+
+  const totalDuration = (rememberedTracks.length - 1) * stepSeconds + PHASE_SECONDS + DUET_OVERLAP_SECONDS;
+  const finishedTimer = setTimeout(() => {
+    if (generation !== playbackGeneration) return;
+    if (activeTrack) activeTrack.complete = true;
+    phase = "ready";
+    document.body.className = "";
+    stopRecordSpin();
+    phaseLabel.textContent = "Redo";
+    timerLabel.textContent = "5.0";
+    progressBar.style.width = "0%";
+    statusText.textContent = "Skivan är återbesökt. Minnet ändrade form lite.";
+    activeTrack = null;
+    updateRevisitButton();
+  }, totalDuration * 1000 + 160);
 
   if (!animationFrame) animateRevisit();
-  playNextMemoryTrack();
+  visualTimers.push(finishedTimer);
 }
 
 function ensureAudioContextOnly() {
@@ -740,12 +826,25 @@ function animate() {
 }
 
 function animateRevisit() {
+  updateRevisitMeter();
   draw();
   if (phase === "revisiting") {
     animationFrame = requestAnimationFrame(animateRevisit);
   } else {
     animationFrame = null;
   }
+}
+
+function updateRevisitMeter() {
+  if (phase !== "revisiting" || !activeTrack) return;
+
+  const elapsed = performance.now() - phaseStart;
+  const progress = Math.min(1, elapsed / phaseDuration);
+  activeTrack.progress = progress;
+  if (progress >= 0.995) activeTrack.complete = true;
+
+  timerLabel.textContent = (Math.max(0, phaseDuration - elapsed) / 1000).toFixed(1);
+  progressBar.style.width = `${progress * 100}%`;
 }
 
 function drawIdle() {
@@ -756,9 +855,77 @@ function draw() {
   const rect = canvas.getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
 
+  drawMeadowHalo();
   drawRecordBase();
   drawAllTracks();
   drawEngravingPoint();
+}
+
+function drawMeadowHalo() {
+  const rect = canvas.getBoundingClientRect();
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+  const spin = currentRecordRotation() * 0.18;
+  const flowers = [
+    [0.04, 0.18, 8, "#fff5cf", "#e6a62d"],
+    [0.78, 0.17, 7, "#f18bb1", "#7c4722"],
+    [0.12, 0.77, 6, "#f7d95f", "#6d401d"],
+    [0.86, 0.72, 8, "#fff8e7", "#d49b21"],
+    [0.68, 0.88, 7, "#d98df0", "#5b3a76"]
+  ];
+
+  ctx.save();
+  ctx.globalAlpha = 0.62;
+
+  flowers.forEach(([px, py, petals, petal, middle], index) => {
+    const x = px * rect.width + Math.sin(spin + index) * 5;
+    const y = py * rect.height + Math.cos(spin * 0.9 + index) * 4;
+    const size = rect.width * (0.018 + index * 0.0015);
+    drawCanvasFlower(x, y, size, petals, petal, middle, spin + index);
+  });
+
+  ctx.restore();
+}
+
+function drawCanvasFlower(x, y, size, petals, petalColor, middleColor, angleOffset) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angleOffset);
+
+  for (let i = 0; i < petals; i++) {
+    const angle = (i / petals) * Math.PI * 2;
+    ctx.save();
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.ellipse(size * 0.82, 0, size * 0.65, size * 0.32, 0, 0, Math.PI * 2);
+    ctx.fillStyle = petalColor;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.beginPath();
+  ctx.arc(0, 0, size * 0.38, 0, Math.PI * 2);
+  ctx.fillStyle = middleColor;
+  ctx.fill();
+  ctx.restore();
+}
+
+function startRecordSpin() {
+  if (recordSpinning) return;
+  spinStartedAt = performance.now();
+  recordSpinning = true;
+}
+
+function stopRecordSpin() {
+  if (!recordSpinning) return;
+  spinBase = currentRecordRotation();
+  recordSpinning = false;
+}
+
+function currentRecordRotation() {
+  if (!recordSpinning) return spinBase;
+  const elapsedSeconds = (performance.now() - spinStartedAt) / 1000;
+  return spinBase + elapsedSeconds * Math.PI * 2 * RECORD_SPIN_RPS;
 }
 
 function drawRecordBase() {
@@ -766,6 +933,7 @@ function drawRecordBase() {
   const cx = rect.width / 2;
   const cy = rect.height / 2;
   const maxR = rect.width * 0.44;
+  const rotation = currentRecordRotation();
 
   ctx.save();
 
@@ -781,11 +949,26 @@ function drawRecordBase() {
 
   ctx.globalAlpha = 0.18;
   ctx.lineWidth = 1;
+  ctx.translate(cx, cy);
+  ctx.rotate(rotation);
+  ctx.translate(-cx, -cy);
 
   for (let r = rect.width * 0.13; r <= maxR; r += rect.width * 0.032) {
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(255,247,232,0.34)";
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 0.22;
+  for (let i = 0; i < 24; i++) {
+    const angle = (i / 24) * Math.PI * 2;
+    const inner = rect.width * randomScratchRadius(i, 0.18, 0.39);
+    const outer = inner + rect.width * 0.018;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner);
+    ctx.lineTo(cx + Math.cos(angle + 0.018) * outer, cy + Math.sin(angle + 0.018) * outer);
+    ctx.strokeStyle = i % 5 === 0 ? "rgba(255,211,107,0.46)" : "rgba(255,247,232,0.24)";
     ctx.stroke();
   }
 
@@ -800,6 +983,7 @@ function drawRecordBase() {
 
 function drawAllTracks() {
   const rect = canvas.getBoundingClientRect();
+  const rotation = currentRecordRotation();
 
   tracks.forEach((track, index) => {
     const age = index;
@@ -814,11 +998,11 @@ function drawAllTracks() {
       ? track.contour
       : contourFromLiveSamples(track.liveSamples);
 
-    drawTrack(track, contour, radius, progress, age);
+    drawTrack(track, contour, radius, progress, age, rotation);
   });
 }
 
-function drawTrack(track, contour, radius, progress, age) {
+function drawTrack(track, contour, radius, progress, age, rotation) {
   if (!contour.length) return;
 
   const rect = canvas.getBoundingClientRect();
@@ -839,7 +1023,7 @@ function drawTrack(track, contour, radius, progress, age) {
 
     // Toppen är alltid gaddens punkt.
     // Spåret ristas medurs under fem sekunder.
-    const angle = -Math.PI / 2 + t * Math.PI * 2;
+    const angle = -Math.PI / 2 + t * Math.PI * 2 + rotation;
 
     const melodic = Math.log2(point.ratio || 1) * grooveNoise;
     const energetic = (point.volume || 0) * 7;
@@ -1035,8 +1219,8 @@ function resample(points, targetLength) {
   return result;
 }
 
-function makeSteppedPhrase(motif, mode) {
-  const noteCount = mode === "development" ? 14 : 12;
+function makeSteppedPhrase(motif, mode, lilt = 1) {
+  const noteCount = mode === "development" ? 14 : mode === "bridge" ? 8 : 12;
   const source = resample(motif.contour, noteCount);
 
   const scale = [0, 2, 3, 5, 7, 9, 10]; // mjuk minor/pentatonisk-ish färg
@@ -1050,7 +1234,9 @@ function makeSteppedPhrase(motif, mode) {
     let shouldRest = false;
 
     // Små andningar. Mer i "surrar" än "svarar".
-    if (mode === "development") {
+    if (mode === "bridge") {
+      shouldRest = Math.random() < 0.05;
+    } else if (mode === "development") {
       shouldRest = Math.random() < 0.16 || (index === 5 && Math.random() < 0.55);
     } else {
       shouldRest = Math.random() < 0.09;
@@ -1071,7 +1257,9 @@ function makeSteppedPhrase(motif, mode) {
       freq,
       volume: clamp(0.22 + point.volume * 0.78 + phraseWave * 0.12, 0.08, 1),
       rest: shouldRest || !point.voiced,
-      hold: mode === "development" && index % 4 === 3 ? 1.22 : 1
+      hold:
+        (mode === "development" && index % 4 === 3 ? 1.22 : 1) *
+        randomBetween(1 - 0.11 * lilt, 1 + 0.14 * lilt)
     };
   });
 }
@@ -1148,6 +1336,11 @@ function randomBetween(min, max) {
 
 function randomFrom(items) {
   return items[Math.floor(Math.random() * items.length)];
+}
+
+function randomScratchRadius(index, min, max) {
+  const n = Math.sin(index * 127.1 + 11.7) * 43758.5453;
+  return min + (n - Math.floor(n)) * (max - min);
 }
 
 function safeDisconnect(node) {
